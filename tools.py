@@ -13,6 +13,7 @@ Tools:
 """
 
 import os
+import re
 
 from dotenv import load_dotenv
 from groq import Groq
@@ -20,6 +21,9 @@ from groq import Groq
 from utils.data_loader import load_listings
 
 load_dotenv()
+
+
+_MODEL = "llama-3.1-8b-instant"
 
 
 # ── Groq client ───────────────────────────────────────────────────────────────
@@ -69,8 +73,38 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    listings = load_listings()
+    query_terms = set(re.findall(r"[a-z0-9]+", description.lower()))
+
+    matches = []
+    for listing in listings:
+        if max_price is not None and listing["price"] > max_price:
+            continue
+
+        if size is not None:
+            requested_size = size.strip().lower()
+            listing_size = listing["size"].lower()
+            if requested_size and requested_size not in listing_size:
+                continue
+
+        searchable_text = " ".join(
+            [
+                listing["title"],
+                listing["description"],
+                listing["category"],
+                listing["brand"] or "",
+                " ".join(listing["style_tags"]),
+                " ".join(listing["colors"]),
+            ]
+        ).lower()
+        listing_terms = set(re.findall(r"[a-z0-9]+", searchable_text))
+        score = len(query_terms & listing_terms)
+
+        if score > 0:
+            matches.append((score, listing["price"], listing))
+
+    matches.sort(key=lambda item: (-item[0], item[1]))
+    return [listing for _, _, listing in matches]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -100,8 +134,59 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    if not new_item:
+        return "I can't suggest an outfit because no item was selected."
+
+    client = _get_groq_client()
+    wardrobe_items = wardrobe.get("items", []) if wardrobe else []
+
+    item_summary = (
+        f"{new_item.get('title', 'Selected item')} "
+        f"({new_item.get('category', 'item')}, size {new_item.get('size', 'unknown')}, "
+        f"colors: {', '.join(new_item.get('colors', [])) or 'unknown'}, "
+        f"style tags: {', '.join(new_item.get('style_tags', [])) or 'none'})"
+    )
+
+    if wardrobe_items:
+        wardrobe_summary = "\n".join(
+            "- {name} ({category}; colors: {colors}; style: {tags}; notes: {notes})".format(
+                name=item.get("name", "Unnamed item"),
+                category=item.get("category", "unknown"),
+                colors=", ".join(item.get("colors", [])) or "unknown",
+                tags=", ".join(item.get("style_tags", [])) or "none",
+                notes=item.get("notes") or "none",
+            )
+            for item in wardrobe_items
+        )
+        prompt = (
+            "Suggest 1-2 complete outfits using this secondhand find and named "
+            "pieces from the user's wardrobe. Include specific pairings, shoes, "
+            "accessories, colors, proportions, and the overall vibe.\n\n"
+            f"New item: {item_summary}\n\n"
+            f"Wardrobe:\n{wardrobe_summary}"
+        )
+    else:
+        prompt = (
+            "Suggest 1-2 useful outfit ideas for this secondhand find. The user "
+            "has not entered wardrobe items yet, so give general styling advice "
+            "with specific clothing pairings, shoes, accessories, colors, "
+            "proportions, and the overall vibe.\n\n"
+            f"New item: {item_summary}"
+        )
+
+    response = client.chat.completions.create(
+        model=_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a concise personal stylist for secondhand clothing.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.7,
+        max_tokens=300,
+    )
+    return response.choices[0].message.content.strip()
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -133,5 +218,33 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    if not outfit or not outfit.strip():
+        return "Cannot create a fit card because the outfit suggestion is empty."
+    if not new_item:
+        return "Cannot create a fit card because no selected item was provided."
+
+    client = _get_groq_client()
+    prompt = (
+        "Write a casual 2-4 sentence social media outfit caption. Make it sound "
+        "like a real OOTD post, not a product description. Mention the item "
+        "name, price, and platform naturally once each, and capture the outfit "
+        "vibe in specific terms.\n\n"
+        f"Item: {new_item.get('title', 'Selected item')}\n"
+        f"Price: ${new_item.get('price', 'unknown')}\n"
+        f"Platform: {new_item.get('platform', 'unknown')}\n"
+        f"Outfit idea: {outfit.strip()}"
+    )
+
+    response = client.chat.completions.create(
+        model=_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": "You write short, authentic outfit captions.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.9,
+        max_tokens=180,
+    )
+    return response.choices[0].message.content.strip()

@@ -20,6 +20,35 @@ from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
 
 # ── query handler ─────────────────────────────────────────────────────────────
 
+def _normalize_user_query(user_query: str) -> str:
+    """
+    Support both free-text queries and labeled multiline input from the UI.
+    """
+    fields = {}
+    for line in user_query.splitlines():
+        if ":" not in line:
+            continue
+
+        key, value = line.split(":", 1)
+        normalized_key = key.strip().lower().replace("_", " ")
+        fields[normalized_key] = value.strip()
+
+    description = fields.get("description")
+    size = fields.get("size")
+    max_price = fields.get("max price") or fields.get("max_price")
+
+    if not description:
+        return user_query.strip()
+
+    normalized = description
+    if size:
+        normalized = f"{normalized} size {size}"
+    if max_price:
+        normalized = f"{normalized} under ${max_price}"
+
+    return normalized
+
+
 def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
     """
     Called by Gradio when the user submits a query.
@@ -43,8 +72,33 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
            string and return it along with session["outfit_suggestion"] and
            session["fit_card"].
     """
-    # TODO: implement this function
-    return "Agent not yet implemented.", "", ""
+    if not user_query or not user_query.strip():
+        return "Please enter what you're looking for.", "", ""
+
+    if wardrobe_choice == "Empty wardrobe (new user)":
+        wardrobe = get_empty_wardrobe()
+    else:
+        wardrobe = get_example_wardrobe()
+
+    session = run_agent(_normalize_user_query(user_query), wardrobe)
+
+    if session["error"]:
+        return f"Error: {session['error']}", "", ""
+
+    selected_item = session["selected_item"]
+    listing_text = (
+        f"{selected_item['title']}\n"
+        f"Price: ${selected_item['price']:.2f}\n"
+        f"Platform: {selected_item['platform']}\n"
+        f"Condition: {selected_item['condition']}\n\n"
+        f"{selected_item['description']}"
+    )
+
+    return (
+        listing_text,
+        session["outfit_suggestion"] or "",
+        session["fit_card"] or "",
+    )
 
 
 # ── interface ─────────────────────────────────────────────────────────────────
